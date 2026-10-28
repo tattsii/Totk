@@ -76,7 +76,7 @@ jobs:
       - name: Сборка IPA
         run: |
           cd nxnative
-          python3 scripts/build_ipa_from_nsp.py ~/TOTK_Game -k ~/prod.keys --show-fps
+          python3 scripts/build_ipa_from_nsp.py ~/TOTK_Game -k ~/prod.keys --show-fps --allow-other-metal
           rm -f ~/TOTK_Game/*.nsp ~/TOTK_Game/*.xci ~/TOTK_Game/*.nsz
           ls -lh ~/TOTK_Game
 
