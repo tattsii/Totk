@@ -1,0 +1,62 @@
+name: Build TOTK IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'Вставь ссылку на архив с игрой'
+        required: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 240
+    steps:
+      - name: Освобождение места
+        run: |
+          ACTIVE_XCODE=$(xcode-select -p | sed 's|/Contents/Developer||')
+          for app in /Applications/Xcode*.app; do
+            if [ "$app" != "$ACTIVE_XCODE" ]; then
+              sudo rm -rf "$app"
+            fi
+          done
+          sudo rm -rf ~/Library/Android /Library/Frameworks/Mono.framework /opt/hostedtoolcache
+          df -h
+
+      - name: Установка зависимостей
+        run: |
+          brew install xcodegen zstd spirv-cross glslang p7zip
+          brew install --cask dotnet-sdk
+          python3 -m pip install --break-system-packages lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
+
+      - name: Клонирование nxnative
+        run: |
+          git clone https://github.com/seedds/nxnative.git
+
+      - name: Скачивание архива и распаковка
+        run: |
+          mkdir -p ~/TOTK_Game
+          gdown "${{ github.event.inputs.zip_url }}" -O ~/totk.zip
+          mkdir -p ~/extract_temp
+          7z x ~/totk.zip -o~/extract_temp -y
+          rm -f ~/totk.zip
+          find ~/extract_temp -type f -exec mv -f {} ~/TOTK_Game/ \;
+          rm -rf ~/extract_temp
+          ls -lh ~/TOTK_Game
+
+      - name: Сборка IPA
+        run: |
+          cd nxnative
+          python3 scripts/build_ipa_from_nsp.py ~/TOTK_Game -k ~/TOTK_Game/prod.keys --show-fps
+          rm -f ~/TOTK_Game/*.nsp ~/TOTK_Game/*.xci ~/TOTK_Game/*.nsz
+          ls -lh ~/TOTK_Game
+
+      - name: Выгрузка готового IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: TOTK-Native-iOS-IPA
+          path: |
+            ~/TOTK_Game/*.ipa
+            ~/TOTK_Game/*.idx
+          compression-level: 0
+          retention-days: 1
