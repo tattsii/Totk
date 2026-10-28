@@ -23,7 +23,7 @@ jobs:
         run: |
           brew install xcodegen zstd spirv-cross glslang p7zip
           brew install --cask dotnet-sdk
-          python3 -m pip install --break-system-packages lz4 capstone fonttools nsz "backports.zstd; python_version < '3.14'"
+          python3 -m pip install --break-system-packages lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
 
       - name: Клонирование nxnative
         run: |
@@ -34,12 +34,19 @@ jobs:
           mkdir -p ~/TOTK_Game
           mkdir -p ~/extract_temp
           
-          # Скачиваем напрямую по вшитому ID (с буквой O на конце)
-          curl -L "https://drive.usercontent.google.com/download?id=18DEaiRoWhGWlLtEOpFeNpc09y4gcvz2O&export=download&confirm=t" -o ~/totk.zip
+          # 1. Скачиваем свежую копию через gdown по полной ссылке
+          gdown --fuzzy "https://drive.google.com/file/d/1zlAalsDU51-dPV1yyaMglU86Y6uoopP4/view?usp=sharing" -O ~/totk.zip || true
           
-          # Проверяем размер скачанного файла (если там несколько килобайт вместо 17 ГБ — значит Google заблокировал файл по квоте)
+          # 2. Страховка: если скачалась веб-страница вместо архива (< 1 МБ), пробиваем напрямую через curl
+          if [ ! -f ~/totk.zip ] || [ $(stat -f%z ~/totk.zip) -lt 1000000 ]; then
+            echo "Пробиваем скачивание через прямой шлюз..."
+            FID=$(echo "https://drive.google.com/file/d/1zlAalsDU51-dPV1yyaMglU86Y6uoopP4/view?usp=sharing" | sed -E 's/.*\/d\/([a-zA-Z0-9_-]+).*/\1/')
+            curl -L -c /tmp/cookies.txt "https://drive.usercontent.google.com/download?id=${FID}&export=download&confirm=t" -o ~/totk.zip
+          fi
+          
           ls -lh ~/totk.zip
           
+          # Распаковываем и вытаскиваем все файлы (включая prod.keys) в корень папки TOTK_Game
           7z x ~/totk.zip -o~/extract_temp -y
           rm -f ~/totk.zip
           find ~/extract_temp -type f -exec mv -f {} ~/TOTK_Game/ \;
