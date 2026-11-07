@@ -1,4 +1,4 @@
-name: Build TOTK IPA (Torrent + GitHub Artifacts)
+name: Build TOTK IPA
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ concurrency:
 
 jobs:
   build:
-    # Используем образ с Xcode 27
+    # Берем образ, где точно есть Xcode 27
     runs-on: xcode-27
     timeout-minutes: 240
     
@@ -17,40 +17,35 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 1. Умный поиск и выбор Xcode
-      - name: Find and Select Xcode
+      # 1. Находим Xcode и запоминаем его путь
+      - name: Setup Xcode
         run: |
-          # Ищем любой Xcode в папке Applications
+          # Ищем любой Xcode (например, Xcode_27.2.0.app)
           REAL_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
           
           if [ -z "$REAL_XCODE" ]; then
-            echo "::error::No Xcode found on runner!"
-            ls -la /Applications/ | grep -i xcode || true
+            echo "::error::Xcode не найден на сервере!"
             exit 1
           fi
           
-          echo "Found Xcode at: $REAL_XCODE"
+          echo "Найден Xcode: $REAL_XCODE"
           
           # Переключаемся на него
           sudo xcode-select -s "$REAL_XCODE/Contents/Developer"
           
-          echo "Selected Xcode:"
+          # Сохраняем путь в переменную окружения для следующих шагов
+          echo "DEVELOPER_DIR=$REAL_XCODE/Contents/Developer" >> $GITHUB_ENV
+          
           xcodebuild -version
-          xcode-select -p
 
-      # 2. Освобождение места
+      # 2. Очистка диска (БЕЗ удаления Xcode!)
       - name: Free disk space
         run: |
-          ACTIVE_XCODE=$(xcode-select -p | sed 's|/Contents/Developer||')
-          for app in /Applications/Xcode*.app; do
-            if [ "$app" != "$ACTIVE_XCODE" ]; then
-              sudo rm -rf "$app"
-            fi
-          done
+          # Убираем только мусор, чтобы не сломать сборку
           sudo rm -rf ~/Library/Android /Library/Frameworks/Mono.framework /opt/hostedtoolcache
           df -h
 
-      # 3. Зависимости
+      # 3. Ставим зависимости
       - name: Install dependencies
         env:
           HOMEBREW_NO_AUTO_UPDATE: 1
@@ -62,25 +57,25 @@ jobs:
           fi
           python3 -m pip install --break-system-packages lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'"
 
-      # 4. Клонирование
+      # 4. Клонируем движок
       - name: Clone nxnative
         run: git clone --recurse-submodules https://github.com/seedds/nxnative.git
 
-      # 5. Скачивание игры
+      # 5. Качаем игру и ключи
       - name: Download game & keys
         run: |
           set -euo pipefail
           mkdir -p ~/TOTK_Game ~/torrent_dl
           
           if [ ! -f "prod.keys" ]; then
-            echo "::error::prod.keys not found!"
+            echo "::error::prod.keys не найден в корне репозитория!"
             exit 1
           fi
           cp -f prod.keys ~/prod.keys
           
           TORRENT_FILE=$(find . -maxdepth 1 -name "*.torrent" | head -n 1)
           if [ -z "$TORRENT_FILE" ]; then
-            echo "::error::.torrent file not found!"
+            echo "::error::.torrent файл не найден в корне репозитория!"
             exit 1
           fi
           
@@ -102,23 +97,18 @@ jobs:
           rm -rf ~/torrent_dl
           ls -lh ~/TOTK_Game
 
-      # 6. СБОРКА IPA (умный выбор Xcode через DEVELOPER_DIR)
+      # 6. СБОРКА (использует путь, который мы сохранили в DEVELOPER_DIR)
       - name: Build IPA
         run: |
           set -euo pipefail
           
-          # Снова находим Xcode (на случай, если предыдущий шаг что-то сбил)
-          REAL_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
-          if [ -z "$REAL_XCODE" ]; then
-            echo "::error::No Xcode found!"
-            exit 1
+          echo "Сборка с использованием: $DEVELOPER_DIR"
+          # Проверяем, что Xcode на месте
+          if [ ! -f "$DEVELOPER_DIR/usr/bin/xcodebuild" ]; then
+             echo "::error::xcodebuild не найден по пути $DEVELOPER_DIR/usr/bin/xcodebuild"
+             exit 1
           fi
           
-          # Используем DEVELOPER_DIR, это надежнее, чем xcode-select
-          export DEVELOPER_DIR="$REAL_XCODE/Contents/Developer"
-          echo "Using DEVELOPER_DIR: $DEVELOPER_DIR"
-          
-          # Проверяем версию
           "$DEVELOPER_DIR/usr/bin/xcodebuild" -version
           
           cd nxnative
@@ -127,7 +117,7 @@ jobs:
             --show-fps --allow-other-metal \
             -o ~/TOTK_Game/TOTK.ipa --app-name "TOTK" 2>&1 | tee ~/build.log
 
-      # 7. Выгрузка артефактов
+      # 7. Выгрузка результатов
       - name: Upload artifacts
         if: success()
         uses: actions/upload-artifact@v4
@@ -138,7 +128,7 @@ jobs:
             ~/TOTK_Game/**/*.img
           if-no-files-found: error
 
-      # 8. Логи
+      # 8. Выгрузка логов (если что-то пойдет не так)
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -149,7 +139,7 @@ jobs:
             ~/TOTK_Game/*_build/**/*.log
           if-no-files-found: ignore
 
-      # 9. Очистка ключей
+      # 9. Удаляем ключи для безопасности
       - name: Cleanup keys
         if: always()
         run: rm -f ~/prod.keys
