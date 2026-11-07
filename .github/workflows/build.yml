@@ -96,7 +96,7 @@ jobs:
           echo "Файлы в папке ~/TOTK_Game перед сборкой:"
           ls -lh ~/TOTK_Game
 
-        - name: Сборка IPA (RomFS отдельно)
+      - name: Сборка IPA (RomFS отдельно)
         run: |
           set -euo pipefail
           
@@ -109,7 +109,7 @@ jobs:
             --romfs separate --keep-extracted \
             --show-fps --allow-other-metal \
             -o ~/TOTK_Game/TOTK.ipa --app-name "TOTK" 2>&1 | tee ~/build.log
-            
+
       - name: Поиск RomFS.img
         run: find ~/TOTK_Game -iname 'romfs.img' -exec ls -lh {} \;
 
