@@ -9,6 +9,7 @@ concurrency:
 
 jobs:
   build:
+    # Используем образ с Xcode 27
     runs-on: xcode-27
     timeout-minutes: 240
     
@@ -16,22 +17,26 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 1. Жестко проверяем Xcode
-      - name: Verify and Select Xcode 27.1
+      # 1. Умный поиск и выбор Xcode
+      - name: Find and Select Xcode
         run: |
-          if [ ! -d "/Applications/Xcode.app" ]; then
-            echo "::error::Xcode.app not found! Available Xcodes:"
-            ls -d /Applications/Xcode*.app || true
+          # Ищем любой Xcode в папке Applications
+          REAL_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          
+          if [ -z "$REAL_XCODE" ]; then
+            echo "::error::No Xcode found on runner!"
+            ls -la /Applications/ | grep -i xcode || true
             exit 1
           fi
-          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          
+          echo "Found Xcode at: $REAL_XCODE"
+          
+          # Переключаемся на него
+          sudo xcode-select -s "$REAL_XCODE/Contents/Developer"
+          
           echo "Selected Xcode:"
           xcodebuild -version
-          # Проверяем, что это именно 27.x
-          if ! xcodebuild -version | grep -q "Xcode 27"; then
-            echo "::error::Wrong Xcode version! Need 27.1"
-            exit 1
-          fi
+          xcode-select -p
 
       # 2. Освобождение места
       - name: Free disk space
@@ -97,23 +102,32 @@ jobs:
           rm -rf ~/torrent_dl
           ls -lh ~/TOTK_Game
 
-      # 6. СБОРКА (с принудительным выбором Xcode перед запуском)
+      # 6. СБОРКА IPA (умный выбор Xcode через DEVELOPER_DIR)
       - name: Build IPA
         run: |
           set -euo pipefail
           
-          # СНОВА принудительно выбираем Xcode (на случай, если предыдущий шаг сбил)
-          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-          xcode-select -p
+          # Снова находим Xcode (на случай, если предыдущий шаг что-то сбил)
+          REAL_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$REAL_XCODE" ]; then
+            echo "::error::No Xcode found!"
+            exit 1
+          fi
+          
+          # Используем DEVELOPER_DIR, это надежнее, чем xcode-select
+          export DEVELOPER_DIR="$REAL_XCODE/Contents/Developer"
+          echo "Using DEVELOPER_DIR: $DEVELOPER_DIR"
+          
+          # Проверяем версию
+          "$DEVELOPER_DIR/usr/bin/xcodebuild" -version
           
           cd nxnative
-          # Запускаем сборку. Если упадёт, tee сохранит лог, но скрипт завершится с ошибкой
           python3 scripts/build_ipa_from_nsp.py ~/TOTK_Game -k ~/prod.keys \
             --romfs separate --keep-extracted \
             --show-fps --allow-other-metal \
             -o ~/TOTK_Game/TOTK.ipa --app-name "TOTK" 2>&1 | tee ~/build.log
 
-      # 7. Выгрузка (если сборка упала, сюда не дойдет, но лог сохранится)
+      # 7. Выгрузка артефактов
       - name: Upload artifacts
         if: success()
         uses: actions/upload-artifact@v4
@@ -124,7 +138,7 @@ jobs:
             ~/TOTK_Game/**/*.img
           if-no-files-found: error
 
-      # 8. Логи (всегда, даже при падении)
+      # 8. Логи
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -135,7 +149,7 @@ jobs:
             ~/TOTK_Game/*_build/**/*.log
           if-no-files-found: ignore
 
-      # 9. Очистка
+      # 9. Очистка ключей
       - name: Cleanup keys
         if: always()
         run: rm -f ~/prod.keys
