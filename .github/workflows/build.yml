@@ -96,16 +96,20 @@ jobs:
           echo "Файлы в папке ~/TOTK_Game перед сборкой:"
           ls -lh ~/TOTK_Game
 
-      - name: Сборка IPA (RomFS отдельно)
+        - name: Сборка IPA (RomFS отдельно)
         run: |
           set -euo pipefail
+          
+          # Жестко фиксируем путь к Xcode, чтобы скрипт видел iOS SDK
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcode-select -p
+          
           cd nxnative
           python3 scripts/build_ipa_from_nsp.py ~/TOTK_Game -k ~/prod.keys \
             --romfs separate --keep-extracted \
             --show-fps --allow-other-metal \
             -o ~/TOTK_Game/TOTK.ipa --app-name "TOTK" 2>&1 | tee ~/build.log
-          ls -lh ~/TOTK_Game
-
+            
       - name: Поиск RomFS.img
         run: find ~/TOTK_Game -iname 'romfs.img' -exec ls -lh {} \;
 
