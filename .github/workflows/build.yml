@@ -9,24 +9,29 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-latest
+    # Используем новый образ GitHub с Xcode 27 (согласно документации)
+    runs-on: xcode-27
     timeout-minutes: 240
+    
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 1. Ставим Xcode. Пробуем latest-stable, т.к. 27.1 может не быть.
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: 'latest-stable'
-
-      - name: Verify Xcode
+      # 1. Выбор Xcode (на образе xcode-27 он лежит по стандартному пути)
+      - name: Select Xcode 27
         run: |
+          # Проверяем, что Xcode на месте
+          if [ ! -d "/Applications/Xcode.app" ]; then
+            echo "Xcode.app not found! Available Xcodes:"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          echo "Selected Xcode:"
           xcodebuild -version
           xcode-select -p
 
-      # 2. Освобождаем место (твой код, оставляем)
+      # 2. Освобождение места (важно для TOTK, игра большая)
       - name: Free disk space
         run: |
           ACTIVE_XCODE=$(xcode-select -p | sed 's|/Contents/Developer||')
@@ -38,7 +43,7 @@ jobs:
           sudo rm -rf ~/Library/Android /Library/Frameworks/Mono.framework /opt/hostedtoolcache
           df -h
 
-      # 3. Зависимости (твой код, оставляем)
+      # 3. Установка зависимостей
       - name: Install dependencies
         env:
           HOMEBREW_NO_AUTO_UPDATE: 1
@@ -50,38 +55,65 @@ jobs:
           fi
           python3 -m pip install --break-system-packages lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'"
 
-      # 4. Клонируем
+      # 4. Клонирование nxnative
       - name: Clone nxnative
         run: git clone --recurse-submodules https://github.com/seedds/nxnative.git
 
-      # 5. Качаем игру (твой код, оставляем как есть)
+      # 5. Скачивание игры через торрент и подготовка ключей
       - name: Download game & keys
         run: |
           set -euo pipefail
           mkdir -p ~/TOTK_Game ~/torrent_dl
+          
+          # Проверка ключей
+          if [ ! -f "prod.keys" ]; then
+            echo "Error: prod.keys not found in repo root!"
+            exit 1
+          fi
           cp -f prod.keys ~/prod.keys
+          
+          # Поиск торрента
           TORRENT_FILE=$(find . -maxdepth 1 -name "*.torrent" | head -n 1)
+          if [ -z "$TORRENT_FILE" ]; then
+            echo "Error: .torrent file not found in repo root!"
+            exit 1
+          fi
+          echo "Downloading via: $TORRENT_FILE"
+          
           TRACKERS="udp://tracker.opentrackr.org:1337/announce,udp://open.stealth.si:80/announce,udp://tracker.torrent.eu.org:451/announce,udp://exodus.desync.com:6969/announce,http://bt2.t-ru.org/ann"
-          aria2c --select-file=1,2 --seed-time=0 --enable-dht=true --enable-peer-exchange=true \
-            --bt-tracker="$TRACKERS" --bt-max-peers=150 --max-connection-per-server=16 \
-            -d ~/torrent_dl "$TORRENT_FILE"
+          
+          aria2c \
+            --select-file=1,2 \
+            --seed-time=0 \
+            --bt-enable-lpd=true \
+            --enable-dht=true \
+            --enable-peer-exchange=true \
+            --bt-tracker="$TRACKERS" \
+            --bt-max-peers=150 \
+            --max-connection-per-server=16 \
+            --summary-interval=15 \
+            -d ~/torrent_dl \
+            "$TORRENT_FILE"
+
+          # Перенос NSP (исключаем старый апдейт)
           find ~/torrent_dl -type f -name "*.nsp" ! -name "*v393216*" -exec cp -f {} ~/TOTK_Game/ \;
           rm -rf ~/torrent_dl
+          
+          echo "Files in ~/TOTK_Game:"
           ls -lh ~/TOTK_Game
 
-      # 6. СБОРКА. Убрали хардкод пути!
+      # 6. СБОРКА IPA (RomFS отдельно)
       - name: Build IPA
         run: |
           set -euo pipefail
-          # Xcode уже выбран setup-xcode. Просто проверяем.
-          xcode-select -p
+          xcode-select -p # Проверка
           cd nxnative
           python3 scripts/build_ipa_from_nsp.py ~/TOTK_Game -k ~/prod.keys \
             --romfs separate --keep-extracted \
             --show-fps --allow-other-metal \
             -o ~/TOTK_Game/TOTK.ipa --app-name "TOTK" 2>&1 | tee ~/build.log
 
-      # 7. Артефакты (твой код)
+      # 7. Выгрузка артефактов
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -90,15 +122,22 @@ jobs:
             ~/TOTK_Game/TOTK.ipa
             ~/TOTK_Game/**/*.img
           if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
+      # 8. Выгрузка логов
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: ~/build.log
+          path: |
+            ~/build.log
+            ~/TOTK_Game/*_build/**/*.log
           if-no-files-found: ignore
+          retention-days: 3
 
+      # 9. Очистка ключей
       - name: Cleanup keys
         if: always()
         run: rm -f ~/prod.keys
