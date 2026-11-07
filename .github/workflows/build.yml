@@ -1,7 +1,11 @@
-name: Build TOTK IPA
+name: Build TOTK IPA (Torrent + GitHub Artifacts)
 
 on:
   workflow_dispatch:
+
+concurrency:
+  group: build-totk
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -10,6 +14,15 @@ jobs:
     steps:
       - name: Подключение файлов репозитория (.torrent и prod.keys)
         uses: actions/checkout@v4
+
+      # Выбираем самый новый Xcode ДО очистки диска
+      - name: Выбор самого нового Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
+          sudo xcode-select -s "$NEWEST/Contents/Developer"
+          xcodebuild -version
+          sw_vers
 
       - name: Освобождение места на диске
         run: |
@@ -22,32 +35,42 @@ jobs:
           sudo rm -rf ~/Library/Android /Library/Frameworks/Mono.framework /opt/hostedtoolcache
           df -h
 
-      - name: Установка зависимостей и Metal Toolchain
+      - name: Зависимости и Metal Toolchain
         env:
           HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
           xcodebuild -downloadComponent MetalToolchain || true
-          brew install xcodegen zstd spirv-cross glslang aria2
+          brew install xcodegen zstd glslang aria2
           if ! command -v dotnet &> /dev/null; then
             brew install --cask dotnet-sdk
           fi
-          python3 -m pip install --break-system-packages lz4 capstone fonttools nsz "backports.zstd; python_version < '3.14'"
+          python3 -m pip install --break-system-packages lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'"
 
-      - name: Клонирование официального nxnative
-        run: |
-          git clone https://github.com/seedds/nxnative.git
+      - name: Клонирование nxnative
+        run: git clone --recurse-submodules https://github.com/seedds/nxnative.git
 
-      - name: Скачивание игры через торрент
+      - name: Скачивание игры через торрент и подготовка ключей
         run: |
+          set -euo pipefail
           mkdir -p ~/TOTK_Game
           mkdir -p ~/torrent_dl
 
-          # 1. Копируем prod.keys из корня репозитория в домашнюю папку
-          cp -f prod.keys ~/prod.keys
+          # 1. Проверяем и копируем prod.keys из корня репозитория
+          if [ -f "prod.keys" ]; then
+            cp -f prod.keys ~/prod.keys
+            echo "Файл prod.keys успешно найден и скопирован!"
+          else
+            echo "Ошибка: файл prod.keys не найден в корне репозитория!"
+            exit 1
+          fi
           ls -lh ~/prod.keys
 
-          # 2. Находим торрент-файл и качаем базу [v0] + свежий патч [v720896] с публичными трекерами
+          # 2. Находим торрент-файл в репозитории и качаем игру
           TORRENT_FILE=$(find . -maxdepth 1 -name "*.torrent" | head -n 1)
+          if [ -z "$TORRENT_FILE" ]; then
+            echo "Ошибка: .torrent файл не найден в корне репозитория!"
+            exit 1
+          fi
           echo "Качаем по торрент-файлу: $TORRENT_FILE"
           
           TRACKERS="udp://tracker.opentrackr.org:1337/announce,udp://open.stealth.si:80/announce,udp://tracker.torrent.eu.org:451/announce,udp://exodus.desync.com:6969/announce,http://bt2.t-ru.org/ann"
@@ -65,27 +88,49 @@ jobs:
             -d ~/torrent_dl \
             "$TORRENT_FILE"
 
-          # 3. Удаляем папку со старым патчем и переносим только нужные .nsp в ~/TOTK_Game
+          # 3. Переносим нужные .nsp в ~/TOTK_Game
           rm -rf "~/torrent_dl/Old Update for Old Firmwares"
-          find ~/torrent_dl -type f -name "*.nsp" ! -name "*v393216*" -exec mv -f {} ~/TOTK_Game/ \;
+          find ~/torrent_dl -type f -name "*.nsp" ! -name "*v393216*" -exec cp -f {} ~/TOTK_Game/ \;
           rm -rf ~/torrent_dl
 
           echo "Файлы в папке ~/TOTK_Game перед сборкой:"
           ls -lh ~/TOTK_Game
 
-      - name: Сборка IPA
+      - name: Сборка IPA (RomFS отдельно)
         run: |
+          set -euo pipefail
           cd nxnative
-          python3 scripts/build_ipa_from_nsp.py ~/TOTK_Game -k ~/prod.keys --show-fps --allow-other-metal
-          rm -f ~/TOTK_Game/*.nsp ~/TOTK_Game/*.xci ~/TOTK_Game/*.nsz
+          python3 scripts/build_ipa_from_nsp.py ~/TOTK_Game -k ~/prod.keys \
+            --romfs separate --keep-extracted \
+            --show-fps --allow-other-metal \
+            -o ~/TOTK_Game/TOTK.ipa --app-name "TOTK" 2>&1 | tee ~/build.log
           ls -lh ~/TOTK_Game
 
-      - name: Выгрузка готового IPA
+      - name: Поиск RomFS.img
+        run: find ~/TOTK_Game -iname 'romfs.img' -exec ls -lh {} \;
+
+      - name: Выгрузка IPA и RomFS в артефакты GitHub
         uses: actions/upload-artifact@v4
         with:
-          name: TOTK-Native-iOS-IPA
+          name: TOTK-IPA-Bundle
           path: |
-            ~/TOTK_Game/*.ipa
-            ~/TOTK_Game/*.idx
+            ~/TOTK_Game/TOTK.ipa
+            ~/TOTK_Game/**/*.img
+          if-no-files-found: error
           compression-level: 0
           retention-days: 1
+
+      - name: Выгрузка логов
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            ~/build.log
+            ~/TOTK_Game/*_build/**/*.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Очистка ключей
+        if: always()
+        run: rm -f ~/prod.keys
